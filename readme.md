@@ -48,7 +48,7 @@ Para proteger os dados sensíveis dos usuários, como a **Chave PIX**, implement
   "idade": 25,
   "chave_pix": "joao@email.com"
 }
-´´´
+```
 ## Instalação e Execução Local
 
 ### 1. Clone o repositório:
