@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+apostadores.db
+
+venv/
+.venv/
+env/
+
+.env
