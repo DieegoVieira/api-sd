@@ -52,19 +52,15 @@ Para proteger os dados sensíveis dos usuários, como a **Chave PIX**, implement
 ## Instalação e Execução Local
 
 ### 1. Clone o repositório:
-    ```bash
     git clone https://github.com/m-valentim/api-sd.git
 
 ### 2. Instale as dependências:
-    ```bash
     pip install -r requirements.txt
 
 ### 3. Gere uma chave de criptografia local:
-    ```python
      python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 ### Inicie o servidor:
-    ```bash
     uvicorn main:app --reload
 
 **A API estará disponível em `http://127.0.0.1:8000`.**
