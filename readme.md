@@ -56,7 +56,7 @@ Para proteger os dados sensíveis dos usuários (como a **Chave PIX**), implemen
     git clone https://github.com/m-valentim/api-sd.git
 
 ### 2.  Crie um ambiente virtual e instale as dependências:
-    ```bash
+```bash
     python -m venv venv
     source venv/bin/activate  # No Windows: venv\Scripts\activate
     pip install -r requirements.txt
