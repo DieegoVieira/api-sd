@@ -66,9 +66,10 @@ Para proteger os dados sensíveis dos usuários (como a **Chave PIX**), implemen
 
 ### 4. Configure o arquivo `.env`:
     Crie um arquivo chamado `.env` na raiz do projeto e insira a chave gerada:
-    ```env
+
+```env
     ENCRYPTION_KEY=cole_a_chave_gerada_aqui
-    ```
+```
 ### 4. Instale as dependências:
     pip install -r requirements.txt
 
