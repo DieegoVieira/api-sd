@@ -4,6 +4,10 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+
+# Carrega as variáveis do arquivo .env (se existir localmente)
+load_dotenv()
 
 # ==========================================
 # CONFIGURAÇÃO DE BANCO DE DADOS
@@ -15,38 +19,36 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 
 SQLALCHEMY_DATABASE_URL = DATABASE_URL or "sqlite:///./apostadores.db"
 
-if "sqlite" in SQLALCHEMY_DATABASE_URL:
-    engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-else:
-    engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {}
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # ==========================================
-# CONFIGURAÇÃO DE SEGURANÇA (CRIPTOGRAFIA)
+# CONFIGURAÇÃO DE SEGURANÇA (SIMÉTRICA FIXA)
 # ==========================================
-# No Render, crie a variável de ambiente ENCRYPTION_KEY com uma chave gerada.
-# Se não houver, ele gera uma temporária (útil para testes locais, 
-# mas em produção OS DADOS SERÃO PERDIDOS se a aplicação reiniciar sem uma chave fixa).
+# A técnica Fail-Fast: Se a chave não existir, a aplicação quebra IMEDIATAMENTE.
 CHAVE_SECRETA = os.environ.get("ENCRYPTION_KEY")
+
 if not CHAVE_SECRETA:
-    CHAVE_SECRETA = Fernet.generate_key().decode()
-    print(f"⚠️ AVISO: Usando chave temporária! Adicione isso ao .env ou Render: ENCRYPTION_KEY={CHAVE_SECRETA}")
+    raise ValueError(
+        "CRÍTICO: A variável de ambiente ENCRYPTION_KEY não foi configurada! "
+        "O sistema não pode iniciar sem uma chave fixa para garantir a integridade dos dados."
+    )
 
 fernet = Fernet(CHAVE_SECRETA.encode())
 
 def encrypt_data(data: str) -> str:
-    """Criptografa uma string."""
     return fernet.encrypt(data.encode()).decode()
 
 def decrypt_data(data: str) -> str:
-    """Descriptografa uma string."""
     try:
         return fernet.decrypt(data.encode()).decode()
     except Exception:
-        # Retorna um aviso ou levanta erro se a chave mudar e não conseguir descriptografar o banco
-        return "Erro: Chave PIX ilegível (Chave de criptografia inválida)"
+        return "Erro: Falha ao descriptografar (Chave inválida ou dado corrompido)"
 
 # ==========================================
 # MODELOS DE BANCO E PYDANTIC
@@ -57,7 +59,7 @@ class ApostadorDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String, index=True)
     idade = Column(Integer)
-    chave_pix = Column(String) # Aqui será guardado o dado CRIPTOGRAFADO
+    chave_pix = Column(String)
 
 Base.metadata.create_all(bind=engine)
 
@@ -91,17 +93,14 @@ def get_db():
 
 @app.post("/apostadores/", response_model=ApostadorResponse)
 def criar_apostador(apostador: ApostadorCreate, db: Session = Depends(get_db)):
-    # 1. Pegamos os dados e criptografamos a chave PIX
     dados = apostador.model_dump()
     dados["chave_pix"] = encrypt_data(dados["chave_pix"])
     
-    # 2. Salvamos no banco
     db_apostador = ApostadorDB(**dados)
     db.add(db_apostador)
     db.commit()
     db.refresh(db_apostador)
     
-    # 3. Retornamos um dicionário com a chave descriptografada (FastAPI converte para ApostadorResponse)
     return {
         "id": db_apostador.id,
         "nome": db_apostador.nome,
@@ -114,7 +113,6 @@ def listar_apostadores(db: Session = Depends(get_db)):
     apostadores = db.query(ApostadorDB).all()
     resultado = []
     
-    # Descriptografamos a chave de todos os usuários da lista antes de retornar
     for a in apostadores:
         resultado.append({
             "id": a.id,
@@ -131,7 +129,6 @@ def buscar_apostador(apostador_id: int, db: Session = Depends(get_db)):
     if not apostador:
         raise HTTPException(status_code=404, detail="Apostador não encontrado")
     
-    # Retorna descriptografado
     return {
         "id": apostador.id,
         "nome": apostador.nome,
@@ -147,7 +144,6 @@ def atualizar_apostador(apostador_id: int, apostador_atualizado: ApostadorCreate
 
     dados_novos = apostador_atualizado.model_dump()
     
-    # Criptografa a nova chave PIX antes de atualizar o banco
     if "chave_pix" in dados_novos:
         dados_novos["chave_pix"] = encrypt_data(dados_novos["chave_pix"])
 
@@ -157,7 +153,6 @@ def atualizar_apostador(apostador_id: int, apostador_atualizado: ApostadorCreate
     db.commit()
     db.refresh(db_apostador)
     
-    # Retorna descriptografado
     return {
         "id": db_apostador.id,
         "nome": db_apostador.nome,
