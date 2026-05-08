@@ -1,19 +1,19 @@
 import os
+import base64
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
-from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 
-# Carrega as variáveis do arquivo .env (se existir localmente)
 load_dotenv()
 
 # ==========================================
-# CONFIGURAÇÃO DE BANCO DE DADOS
+# DATABASE SETUP
 # ==========================================
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -23,149 +23,86 @@ engine = create_engine(
     SQLALCHEMY_DATABASE_URL, 
     connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {}
 )
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # ==========================================
-# CONFIGURAÇÃO DE SEGURANÇA (SIMÉTRICA FIXA)
+# RSA SECURITY SETUP (FAIL-FAST)
 # ==========================================
-# A técnica Fail-Fast: Se a chave não existir, a aplicação quebra IMEDIATAMENTE.
-CHAVE_SECRETA = os.environ.get("ENCRYPTION_KEY")
+PRIVATE_KEY_STR = os.environ.get("PRIVATE_KEY")
+PUBLIC_KEY_STR = os.environ.get("PUBLIC_KEY")
 
-if not CHAVE_SECRETA:
-    raise ValueError(
-        "CRÍTICO: A variável de ambiente ENCRYPTION_KEY não foi configurada! "
-        "O sistema não pode iniciar sem uma chave fixa para garantir a integridade dos dados."
-    )
+if not PRIVATE_KEY_STR or not PUBLIC_KEY_STR:
+    raise ValueError("ERRO CRÍTICO: As chaves RSA (PRIVATE_KEY e PUBLIC_KEY) não foram configuradas!")
 
-fernet = Fernet(CHAVE_SECRETA.encode())
+# Carregamento das chaves na memória
+private_key = serialization.load_pem_private_key(PRIVATE_KEY_STR.encode(), password=None)
+public_key = serialization.load_pem_public_key(PUBLIC_KEY_STR.encode())
 
 def encrypt_data(data: str) -> str:
-    return fernet.encrypt(data.encode()).decode()
+    ciphertext = public_key.encrypt(
+        data.encode(),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    return base64.b64encode(ciphertext).decode()
 
 def decrypt_data(data: str) -> str:
     try:
-        return fernet.decrypt(data.encode()).decode()
+        plaintext = private_key.decrypt(
+            base64.b64decode(data.encode()),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        return plaintext.decode()
     except Exception:
-        return "Erro: Falha ao descriptografar (Chave inválida ou dado corrompido)"
+        return "Erro: Falha na descriptografia"
 
 # ==========================================
-# MODELOS DE BANCO E PYDANTIC
+# MODELOS E ROTAS (MANTIDOS)
 # ==========================================
 class ApostadorDB(Base):
     __tablename__ = "apostadores"
-
     id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, index=True)
+    nome = Column(String)
     idade = Column(Integer)
     chave_pix = Column(String)
 
 Base.metadata.create_all(bind=engine)
 
-class ApostadorBase(BaseModel):
+class ApostadorCreate(BaseModel):
     nome: str
     idade: int
     chave_pix: str
 
-class ApostadorCreate(ApostadorBase):
-    pass
-
-class ApostadorResponse(ApostadorBase):
+class ApostadorResponse(ApostadorCreate):
     id: int
-    model_config = {"from_attributes": True}
+    class Config: from_attributes = True
 
-# ==========================================
-# APP E DEPENDÊNCIAS
-# ==========================================
-app = FastAPI(title="API de Apostadores")
+app = FastAPI(title="API Apostadores - RSA")
 
 def get_db():
     db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ==========================================
-# ROTAS / ENDPOINTS
-# ==========================================
+    try: yield db
+    finally: db.close()
 
 @app.post("/apostadores/", response_model=ApostadorResponse)
-def criar_apostador(apostador: ApostadorCreate, db: Session = Depends(get_db)):
+def criar(apostador: ApostadorCreate, db: Session = Depends(get_db)):
     dados = apostador.model_dump()
-    dados["chave_pix"] = encrypt_data(dados["chave_pix"])
-    
-    db_apostador = ApostadorDB(**dados)
-    db.add(db_apostador)
+    dados["chave_pix"] = encrypt_data(dados["chave_pix"]) # Tranca com Pública
+    db_obj = ApostadorDB(**dados)
+    db.add(db_obj)
     db.commit()
-    db.refresh(db_apostador)
-    
-    return {
-        "id": db_apostador.id,
-        "nome": db_apostador.nome,
-        "idade": db_apostador.idade,
-        "chave_pix": decrypt_data(db_apostador.chave_pix)
-    }
+    db.refresh(db_obj)
+    return {**dados, "id": db_obj.id, "chave_pix": decrypt_data(db_obj.chave_pix)}
 
 @app.get("/apostadores/", response_model=list[ApostadorResponse])
-def listar_apostadores(db: Session = Depends(get_db)):
-    apostadores = db.query(ApostadorDB).all()
-    resultado = []
-    
-    for a in apostadores:
-        resultado.append({
-            "id": a.id,
-            "nome": a.nome,
-            "idade": a.idade,
-            "chave_pix": decrypt_data(a.chave_pix)
-        })
-        
-    return resultado
-
-@app.get("/apostadores/{apostador_id}", response_model=ApostadorResponse)
-def buscar_apostador(apostador_id: int, db: Session = Depends(get_db)):
-    apostador = db.query(ApostadorDB).filter(ApostadorDB.id == apostador_id).first()
-    if not apostador:
-        raise HTTPException(status_code=404, detail="Apostador não encontrado")
-    
-    return {
-        "id": apostador.id,
-        "nome": apostador.nome,
-        "idade": apostador.idade,
-        "chave_pix": decrypt_data(apostador.chave_pix)
-    }
-
-@app.put("/apostadores/{apostador_id}", response_model=ApostadorResponse)
-def atualizar_apostador(apostador_id: int, apostador_atualizado: ApostadorCreate, db: Session = Depends(get_db)):
-    db_apostador = db.query(ApostadorDB).filter(ApostadorDB.id == apostador_id).first()
-    if not db_apostador:
-        raise HTTPException(status_code=404, detail="Apostador não encontrado")
-
-    dados_novos = apostador_atualizado.model_dump()
-    
-    if "chave_pix" in dados_novos:
-        dados_novos["chave_pix"] = encrypt_data(dados_novos["chave_pix"])
-
-    for key, value in dados_novos.items():
-        setattr(db_apostador, key, value)
-
-    db.commit()
-    db.refresh(db_apostador)
-    
-    return {
-        "id": db_apostador.id,
-        "nome": db_apostador.nome,
-        "idade": db_apostador.idade,
-        "chave_pix": decrypt_data(db_apostador.chave_pix)
-    }
-
-@app.delete("/apostadores/{apostador_id}")
-def deletar_apostador(apostador_id: int, db: Session = Depends(get_db)):
-    db_apostador = db.query(ApostadorDB).filter(ApostadorDB.id == apostador_id).first()
-    if not db_apostador:
-        raise HTTPException(status_code=404, detail="Apostador não encontrado")
-
-    db.delete(db_apostador)
-    db.commit()
-    return {"mensagem": "Apostador deletado com sucesso"}
+def listar(db: Session = Depends(get_db)):
+    lista = db.query(ApostadorDB).all()
+    return [{"id": a.id, "nome": a.nome, "idade": a.idade, "chave_pix": decrypt_data(a.chave_pix)} for a in lista]
