@@ -106,3 +106,36 @@ def criar(apostador: ApostadorCreate, db: Session = Depends(get_db)):
 def listar(db: Session = Depends(get_db)):
     lista = db.query(ApostadorDB).all()
     return [{"id": a.id, "nome": a.nome, "idade": a.idade, "chave_pix": decrypt_data(a.chave_pix)} for a in lista]
+
+@app.put("/apostadores/{apostador_id}", response_model=ApostadorResponse)
+def atualizar(apostador_id: int, apostador_atualizado: ApostadorCreate, db: Session = Depends(get_db)):
+    db_obj = db.query(ApostadorDB).filter(ApostadorDB.id == apostador_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Apostador não encontrado")
+
+    dados_novos = apostador_atualizado.model_dump()
+    # Criptografa a nova chave PIX com a Chave Pública
+    dados_novos["chave_pix"] = encrypt_data(dados_novos["chave_pix"])
+
+    for key, value in dados_novos.items():
+        setattr(db_obj, key, value)
+
+    db.commit()
+    db.refresh(db_obj)
+    
+    return {
+        "id": db_obj.id, 
+        "nome": db_obj.nome, 
+        "idade": db_obj.idade, 
+        "chave_pix": decrypt_data(db_obj.chave_pix) # Mostra descriptografado na resposta
+    }
+
+@app.delete("/apostadores/{apostador_id}")
+def deletar(apostador_id: int, db: Session = Depends(get_db)):
+    db_obj = db.query(ApostadorDB).filter(ApostadorDB.id == apostador_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Apostador não encontrado")
+
+    db.delete(db_obj)
+    db.commit()
+    return {"mensagem": "Apostador deletado com sucesso"}
